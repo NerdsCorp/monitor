@@ -1,7 +1,7 @@
 {
     "id": "monitoring",
     "name": "Monitoring",
-    "author": "Fritz Israel",
+    "author": "Fritz Israel, Maintained By Kristopher Reeves (Dr.Reeves)",
     "version": "1.0.0",
     "description": "Monitor nodes and servers from the admin panel",
     "category": "plugin",
