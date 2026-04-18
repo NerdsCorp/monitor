@@ -1,17 +1,17 @@
 {
-    "id": "monitoring",
-    "name": "Monitoring",
-    "author": "Fritz Israel, Maintained By Kristopher Reeves (Dr.Reeves)",
-    "version": "1.0.0",
-    "description": "Monitor nodes and servers from the admin panel",
-    "category": "plugin",
-    "url": "https://raw.githubusercontent.com/NerdsCorp/Monitor/refs/heads/main/update.json",
-    "update_url": null,
-    "namespace": "Pelican\\Monitoring",
-    "class": "MonitoringPlugin",
-    "panels": [
-        "admin"
-    ],
-    "panel_version": null,
-    "composer_packages": null
+  "id": "monitoring",
+  "name": "Monitoring",
+  "author": "Fritz Israel, Maintained By Kristopher Reeves (Dr.Reeves)",
+  "version": "1.0.0",
+  "description": "Monitor nodes and servers from the admin panel",
+  "category": "plugin",
+  "url": "https://raw.githubusercontent.com/NerdsCorp/Monitor/refs/heads/main/update.json",
+  "update_url": null,
+  "namespace": "Pelican\\Monitoring",
+  "class": "MonitoringPlugin",
+  "panels": [
+    "admin"
+  ],
+  "panel_version": null,
+  "composer_packages": null
 }
