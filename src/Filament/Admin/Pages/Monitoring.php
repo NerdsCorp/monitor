@@ -5,15 +5,19 @@ namespace Pelican\Monitoring\Filament\Admin\Pages;
 use App\Enums\TablerIcon;
 use BackedEnum;
 use Filament\Pages\Page;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Pelican\Monitoring\Filament\Admin\Widgets\AllNodesCpuChart;
 use Pelican\Monitoring\Filament\Admin\Widgets\AllNodesMemoryChart;
 use Pelican\Monitoring\Filament\Admin\Widgets\AllNodesStorageChart;
 use Pelican\Monitoring\Filament\Admin\Widgets\NodeHealthTable;
+use Pelican\Monitoring\Filament\Admin\Widgets\ServerStatusDistribution;
 use Pelican\Monitoring\Filament\Admin\Widgets\SystemOverviewStats;
 use Pelican\Monitoring\Filament\Admin\Widgets\TopServersTable;
 
 class Monitoring extends Page
 {
+    use InteractsWithMonitoringData;
+
     protected static string|BackedEnum|null $navigationIcon = TablerIcon::Activity;
 
     protected static ?int $navigationSort = 2;
@@ -43,6 +47,7 @@ class Monitoring extends Page
             AllNodesCpuChart::class,
             AllNodesMemoryChart::class,
             AllNodesStorageChart::class,
+            ServerStatusDistribution::class,
             NodeHealthTable::class,
             TopServersTable::class,
         ];
@@ -60,5 +65,12 @@ class Monitoring extends Page
     public function getHeaderWidgetsColumns(): int|array
     {
         return 1;
+    }
+
+    protected function getViewData(): array
+    {
+        return [
+            'monitoringSnapshot' => $this->getMonitoringSnapshot(),
+        ];
     }
 }

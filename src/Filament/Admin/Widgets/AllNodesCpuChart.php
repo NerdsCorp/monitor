@@ -2,12 +2,14 @@
 
 namespace Pelican\Monitoring\Filament\Admin\Widgets;
 
-use App\Models\Node;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Filament\Support\RawJs;
 use Filament\Widgets\ChartWidget;
 
 class AllNodesCpuChart extends ChartWidget
 {
+    use InteractsWithMonitoringData;
+
     protected ?string $pollingInterval = '10s';
 
     protected ?string $maxHeight = '300px';
@@ -26,11 +28,13 @@ class AllNodesCpuChart extends ChartWidget
 
     protected function getData(): array
     {
-        $nodes = Node::all();
+        $snapshot = $this->getMonitoringSnapshot();
+        $nodes = array_values($snapshot['nodes'] ?? []);
         $datasets = [];
         $labels = [];
-        $this->currentCpuTotal = 0;
-        $this->maxCpuTotal = 0;
+        $summary = $snapshot['summary'] ?? [];
+        $this->currentCpuTotal = (float) ($summary['current_cpu_total'] ?? 0);
+        $this->maxCpuTotal = (float) ($summary['cpu_capacity_total'] ?? 0);
         $colors = [
             'rgba(59, 130, 246, 0.8)',
             'rgba(16, 185, 129, 0.8)',
@@ -43,30 +47,11 @@ class AllNodesCpuChart extends ChartWidget
         ];
 
         foreach ($nodes as $index => $node) {
-            $sessionKey = "monitoring.node_cpu.{$node->id}";
-
-            try {
-                $stats = $node->statistics();
-                $cpuCount = $node->systemInformation()['cpu_count'] ?? 1;
-                $cpuPercent = round($stats['cpu_percent'] * $cpuCount, 2);
-                $this->currentCpuTotal += $cpuPercent;
-                $this->maxCpuTotal += $cpuCount * 100;
-            } catch (\Exception) {
-                $cpuPercent = 0;
-            }
-
-            $history = session($sessionKey, []);
-            $history[] = [
-                'value' => $cpuPercent,
-                'timestamp' => now(user()->timezone ?? 'UTC')->format('H:i:s'),
-            ];
-            $history = array_slice($history, -30);
-            session()->put($sessionKey, $history);
-
             $color = $colors[$index % count($colors)];
+            $history = $node['cpu_history'] ?? [];
 
             $datasets[] = [
-                'label' => $node->name,
+                'label' => $node['name'],
                 'data' => array_column($history, 'value'),
                 'borderColor' => $color,
                 'backgroundColor' => str_replace('0.8', '0.1', $color),
@@ -153,6 +138,6 @@ class AllNodesCpuChart extends ChartWidget
         $current = format_number($this->currentCpuTotal, maxPrecision: 1);
         $max = format_number($this->maxCpuTotal, maxPrecision: 0);
 
-        return "{$current} % / {$max} %";
+        return trans('monitoring::monitoring.charts.cpu_total_desc', ['current' => $current, 'max' => $max]);
     }
 }

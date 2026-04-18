@@ -6,17 +6,20 @@ return [
 
     'stats' => [
         'nodes_online' => 'Nodes Online',
-        'nodes_online_desc' => 'Connected nodes',
+        'nodes_online_desc' => ':offline offline, :errors refresh errors',
         'servers_running' => 'Servers Running',
-        'servers_running_desc' => 'Active servers',
+        'servers_running_desc' => ':offline offline, :errors refresh errors',
         'avg_cpu' => 'Avg. CPU Usage',
         'avg_cpu_desc' => 'Average across all nodes',
         'memory_usage' => 'Memory Usage',
         'disk_usage' => 'Disk Usage',
+        'refresh_status' => 'Refresh Status',
+        'refresh_status_desc' => 'Last refresh at :time',
     ],
 
     'charts' => [
         'cpu_all_nodes' => 'CPU Usage',
+        'cpu_total_desc' => ':current % total load across :max % capacity',
         'memory_all_nodes' => 'Memory Usage',
         'storage_all_nodes' => 'Storage',
         'server_status' => 'Server Status',
@@ -46,5 +49,20 @@ return [
         'servers' => 'Servers',
         'node' => 'Node',
         'owner' => 'Owner',
+        'server_status' => [
+            'running' => 'Running',
+            'starting' => 'Starting',
+            'offline' => 'Offline',
+            'error' => 'Error',
+        ],
+    ],
+
+    'status' => [
+        'heading' => 'Monitoring Refresh',
+        'healthy' => 'Healthy',
+        'degraded' => 'Degraded',
+        'summary' => 'Status: :status. Last refresh: :time.',
+        'counts' => ':offline offline nodes, :errors refresh errors.',
+        'unknown_time' => 'unknown',
     ],
 ];

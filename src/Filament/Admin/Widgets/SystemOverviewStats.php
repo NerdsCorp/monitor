@@ -2,101 +2,78 @@
 
 namespace Pelican\Monitoring\Filament\Admin\Widgets;
 
-use App\Enums\ContainerStatus;
-use App\Models\Node;
-use App\Models\Server;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 
 class SystemOverviewStats extends StatsOverviewWidget
 {
+    use InteractsWithMonitoringData;
+
     protected ?string $pollingInterval = '10s';
 
     protected static bool $isDiscovered = false;
 
     protected function getStats(): array
     {
-        $nodes = Node::all();
-        $totalServers = Server::count();
-        $runningServers = 0;
-
-        $totalCpu = 0;
-        $totalMemory = 0;
-        $totalMemoryUsed = 0;
-        $totalDisk = 0;
-        $totalDiskUsed = 0;
-        $onlineNodes = 0;
-
-        foreach ($nodes as $node) {
-            try {
-                $stats = $node->statistics();
-                $onlineNodes++;
-
-                $cpuCount = $node->systemInformation()['cpu_count'] ?? 1;
-                $totalCpu += round($stats['cpu_percent'] * $cpuCount, 2);
-                $totalMemory += $stats['memory_total'];
-                $totalMemoryUsed += $stats['memory_used'];
-                $totalDisk += $stats['disk_total'];
-                $totalDiskUsed += $stats['disk_used'];
-            } catch (\Exception) {
-                //
-            }
-        }
-
-        foreach (Server::all() as $server) {
-            try {
-                if ($server->retrieveStatus() === ContainerStatus::Running) {
-                    $runningServers++;
-                }
-            } catch (\Exception) {
-                //
-            }
-        }
-
-        $avgCpu = $onlineNodes > 0 ? round($totalCpu / $onlineNodes, 1) : 0;
-        $memoryPercent = $totalMemory > 0 ? round(($totalMemoryUsed / $totalMemory) * 100, 1) : 0;
-        $diskPercent = $totalDisk > 0 ? round(($totalDiskUsed / $totalDisk) * 100, 1) : 0;
+        $snapshot = $this->getMonitoringSnapshot();
+        $summary = $snapshot['summary'] ?? [];
+        $trends = $snapshot['trends'] ?? [];
+        $status = $snapshot['status'] ?? 'healthy';
+        $timezone = auth()->user()?->timezone ?? config('app.timezone');
+        $refreshedAt = isset($snapshot['refreshed_at'])
+            ? \Illuminate\Support\Carbon::parse($snapshot['refreshed_at'])->timezone($timezone)->format('H:i:s')
+            : trans('monitoring::monitoring.status.unknown_time');
 
         return [
-            Stat::make(trans('monitoring::monitoring.stats.nodes_online'), "$onlineNodes / {$nodes->count()}")
-                ->description(trans('monitoring::monitoring.stats.nodes_online_desc'))
-                ->color($onlineNodes === $nodes->count() ? 'success' : 'warning')
-                ->chart($this->storeTrend('monitoring.nodes_online', $onlineNodes)),
+            Stat::make(
+                trans('monitoring::monitoring.stats.nodes_online'),
+                ($summary['nodes_online'] ?? 0) . ' / ' . ($summary['nodes_total'] ?? 0),
+            )
+                ->description(trans('monitoring::monitoring.stats.nodes_online_desc', [
+                    'offline' => $summary['nodes_offline'] ?? 0,
+                    'errors' => $summary['node_errors'] ?? 0,
+                ]))
+                ->color(($summary['nodes_offline'] ?? 0) > 0 ? 'warning' : 'success')
+                ->chart(array_column($trends['nodes_online'] ?? [], 'value')),
 
-            Stat::make(trans('monitoring::monitoring.stats.servers_running'), "$runningServers / $totalServers")
-                ->description(trans('monitoring::monitoring.stats.servers_running_desc'))
-                ->color('primary')
-                ->chart($this->storeTrend('monitoring.servers_running', $runningServers)),
+            Stat::make(
+                trans('monitoring::monitoring.stats.servers_running'),
+                ($summary['servers_running'] ?? 0) . ' / ' . ($summary['servers_total'] ?? 0),
+            )
+                ->description(trans('monitoring::monitoring.stats.servers_running_desc', [
+                    'offline' => $summary['servers_offline'] ?? 0,
+                    'errors' => $summary['server_errors'] ?? 0,
+                ]))
+                ->color(($summary['server_errors'] ?? 0) > 0 ? 'warning' : 'primary')
+                ->chart(array_column($trends['servers_running'] ?? [], 'value')),
 
-            Stat::make(trans('monitoring::monitoring.stats.avg_cpu'), "$avgCpu %")
+            Stat::make(trans('monitoring::monitoring.stats.avg_cpu'), ($summary['avg_cpu_percent'] ?? 0) . ' %')
                 ->description(trans('monitoring::monitoring.stats.avg_cpu_desc'))
-                ->color($avgCpu > 80 ? 'danger' : ($avgCpu > 60 ? 'warning' : 'success'))
-                ->chart($this->storeTrend('monitoring.avg_cpu', $avgCpu)),
+                ->color(($summary['avg_cpu_percent'] ?? 0) > 80 ? 'danger' : (($summary['avg_cpu_percent'] ?? 0) > 60 ? 'warning' : 'success'))
+                ->chart(array_column($trends['avg_cpu_percent'] ?? [], 'value')),
 
-            Stat::make(trans('monitoring::monitoring.stats.memory_usage'), "$memoryPercent %")
-                ->description(convert_bytes_to_readable($totalMemoryUsed) . ' / ' . convert_bytes_to_readable($totalMemory))
-                ->color($memoryPercent > 85 ? 'danger' : ($memoryPercent > 70 ? 'warning' : 'success'))
-                ->chart($this->storeTrend('monitoring.memory_percent', $memoryPercent)),
+            Stat::make(trans('monitoring::monitoring.stats.memory_usage'), ($summary['memory_percent'] ?? 0) . ' %')
+                ->description(convert_bytes_to_readable($summary['memory_used'] ?? 0) . ' / ' . convert_bytes_to_readable($summary['memory_total'] ?? 0))
+                ->color(($summary['memory_percent'] ?? 0) > 85 ? 'danger' : (($summary['memory_percent'] ?? 0) > 70 ? 'warning' : 'success'))
+                ->chart(array_column($trends['memory_percent'] ?? [], 'value')),
 
-            Stat::make(trans('monitoring::monitoring.stats.disk_usage'), "$diskPercent %")
-                ->description(convert_bytes_to_readable($totalDiskUsed) . ' / ' . convert_bytes_to_readable($totalDisk))
-                ->color($diskPercent > 90 ? 'danger' : ($diskPercent > 75 ? 'warning' : 'success'))
-                ->chart($this->storeTrend('monitoring.disk_percent', $diskPercent)),
+            Stat::make(trans('monitoring::monitoring.stats.disk_usage'), ($summary['disk_percent'] ?? 0) . ' %')
+                ->description(convert_bytes_to_readable($summary['disk_used'] ?? 0) . ' / ' . convert_bytes_to_readable($summary['disk_total'] ?? 0))
+                ->color(($summary['disk_percent'] ?? 0) > 90 ? 'danger' : (($summary['disk_percent'] ?? 0) > 75 ? 'warning' : 'success'))
+                ->chart(array_column($trends['disk_percent'] ?? [], 'value')),
+
+            Stat::make(
+                trans('monitoring::monitoring.stats.refresh_status'),
+                trans("monitoring::monitoring.status.{$status}"),
+            )
+                ->description(trans('monitoring::monitoring.stats.refresh_status_desc', ['time' => $refreshedAt]))
+                ->color($status === 'healthy' ? 'success' : 'warning'),
         ];
     }
 
     protected function getColumns(): int
     {
-        return 5;
-    }
-
-    private function storeTrend(string $key, float|int $current): array
-    {
-        $history = session($key, []);
-        $history[] = $current;
-        $history = array_slice($history, -7);
-        session()->put($key, $history);
-
-        return $history;
+        return 6;
     }
 }

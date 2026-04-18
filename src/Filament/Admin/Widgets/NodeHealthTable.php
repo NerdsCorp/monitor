@@ -3,12 +3,15 @@
 namespace Pelican\Monitoring\Filament\Admin\Widgets;
 
 use App\Models\Node;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Filament\Widgets\TableWidget;
 
 class NodeHealthTable extends TableWidget
 {
+    use InteractsWithMonitoringData;
+
     protected ?string $pollingInterval = '10s';
 
     protected int|string|array $columnSpan = 'full';
@@ -32,67 +35,26 @@ class NodeHealthTable extends TableWidget
                 TextColumn::make('status')
                     ->label(trans('monitoring::monitoring.tables.status'))
                     ->badge()
-                    ->getStateUsing(function (Node $record) {
-                        try {
-                            $record->statistics();
-
-                            return trans('monitoring::monitoring.tables.online');
-                        } catch (\Exception) {
-                            return trans('monitoring::monitoring.tables.offline');
-                        }
-                    })
-                    ->color(fn (string $state) => $state === trans('monitoring::monitoring.tables.online') ? 'success' : 'danger'),
+                    ->getStateUsing(fn (Node $record): string => trans('monitoring::monitoring.tables.' . ($this->getNodeMetric($record->id)['status_label'] ?? 'offline')))
+                    ->color(fn (string $state): string => $state === trans('monitoring::monitoring.tables.online') ? 'success' : 'danger'),
 
                 TextColumn::make('cpu_usage')
                     ->label(trans('monitoring::monitoring.tables.cpu'))
-                    ->getStateUsing(function (Node $record) {
-                        try {
-                            $stats = $record->statistics();
-                            $cpuCount = $record->systemInformation()['cpu_count'] ?? 1;
-
-                            return format_number(round($stats['cpu_percent'] * $cpuCount, 1), maxPrecision: 1) . ' %';
-                        } catch (\Exception) {
-                            return '-';
-                        }
-                    }),
+                    ->getStateUsing(fn (Node $record): string => format_number($this->getNodeMetric($record->id)['cpu_usage_percent'] ?? 0, maxPrecision: 1) . ' %'),
 
                 TextColumn::make('memory_usage')
                     ->label(trans('monitoring::monitoring.tables.memory'))
-                    ->getStateUsing(function (Node $record) {
-                        try {
-                            $stats = $record->statistics();
-
-                            return convert_bytes_to_readable($stats['memory_used']) . ' / ' . convert_bytes_to_readable($stats['memory_total']);
-                        } catch (\Exception) {
-                            return '-';
-                        }
-                    }),
+                    ->getStateUsing(fn (Node $record): string => convert_bytes_to_readable($this->getNodeMetric($record->id)['memory_used'] ?? 0) . ' / ' . convert_bytes_to_readable($this->getNodeMetric($record->id)['memory_total'] ?? 0)),
 
                 TextColumn::make('disk_usage')
                     ->label(trans('monitoring::monitoring.tables.disk'))
-                    ->getStateUsing(function (Node $record) {
-                        try {
-                            $stats = $record->statistics();
-
-                            return convert_bytes_to_readable($stats['disk_used']) . ' / ' . convert_bytes_to_readable($stats['disk_total']);
-                        } catch (\Exception) {
-                            return '-';
-                        }
-                    }),
+                    ->getStateUsing(fn (Node $record): string => convert_bytes_to_readable($this->getNodeMetric($record->id)['disk_used'] ?? 0) . ' / ' . convert_bytes_to_readable($this->getNodeMetric($record->id)['disk_total'] ?? 0)),
 
                 TextColumn::make('load_average')
                     ->label(trans('monitoring::monitoring.tables.load'))
-                    ->getStateUsing(function (Node $record) {
-                        try {
-                            $stats = $record->statistics();
-
-                            return format_number($stats['load_average1'], maxPrecision: 2) . ' / '
-                                . format_number($stats['load_average5'], maxPrecision: 2) . ' / '
-                                . format_number($stats['load_average15'], maxPrecision: 2);
-                        } catch (\Exception) {
-                            return '-';
-                        }
-                    }),
+                    ->getStateUsing(fn (Node $record): string => format_number($this->getNodeMetric($record->id)['load_average_1'] ?? 0, maxPrecision: 2) . ' / '
+                        . format_number($this->getNodeMetric($record->id)['load_average_5'] ?? 0, maxPrecision: 2) . ' / '
+                        . format_number($this->getNodeMetric($record->id)['load_average_15'] ?? 0, maxPrecision: 2)),
 
                 TextColumn::make('servers_count')
                     ->label(trans('monitoring::monitoring.tables.servers'))

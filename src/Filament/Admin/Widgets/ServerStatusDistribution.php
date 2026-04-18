@@ -2,12 +2,13 @@
 
 namespace Pelican\Monitoring\Filament\Admin\Widgets;
 
-use App\Enums\ContainerStatus;
-use App\Models\Server;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Filament\Widgets\ChartWidget;
 
 class ServerStatusDistribution extends ChartWidget
 {
+    use InteractsWithMonitoringData;
+
     protected ?string $pollingInterval = '30s';
 
     protected ?string $maxHeight = '300px';
@@ -22,33 +23,17 @@ class ServerStatusDistribution extends ChartWidget
 
     protected function getData(): array
     {
-        $running = 0;
-        $stopped = 0;
-        $starting = 0;
-        $errored = 0;
-
-        foreach (Server::all() as $server) {
-            try {
-                $status = $server->retrieveStatus();
-
-                if ($status === ContainerStatus::Running) {
-                    $running++;
-                } elseif ($status === ContainerStatus::Starting) {
-                    $starting++;
-                } elseif ($status->isOffline()) {
-                    $stopped++;
-                } else {
-                    $errored++;
-                }
-            } catch (\Exception) {
-                $errored++;
-            }
-        }
+        $distribution = $this->getMonitoringSnapshot()['server_status_distribution'] ?? [];
 
         return [
             'datasets' => [
                 [
-                    'data' => [$running, $stopped, $starting, $errored],
+                    'data' => [
+                        $distribution['running'] ?? 0,
+                        $distribution['stopped'] ?? 0,
+                        $distribution['starting'] ?? 0,
+                        $distribution['errored'] ?? 0,
+                    ],
                     'backgroundColor' => [
                         'rgba(74, 222, 128, 0.8)',
                         'rgba(156, 163, 175, 0.8)',

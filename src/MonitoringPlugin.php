@@ -4,6 +4,7 @@ namespace Pelican\Monitoring;
 
 use Filament\Contracts\Plugin;
 use Filament\Panel;
+use Pelican\Monitoring\Services\MonitoringDataService;
 
 class MonitoringPlugin implements Plugin
 {
@@ -15,6 +16,8 @@ class MonitoringPlugin implements Plugin
     public function register(Panel $panel): void
     {
         $id = str($panel->getId())->title();
+
+        app()->singleton(MonitoringDataService::class);
 
         $panel->discoverPages(plugin_path($this->getId(), "src/Filament/$id/Pages"), "Pelican\\Monitoring\\Filament\\$id\\Pages");
         $panel->discoverWidgets(plugin_path($this->getId(), "src/Filament/$id/Widgets"), "Pelican\\Monitoring\\Filament\\$id\\Widgets");

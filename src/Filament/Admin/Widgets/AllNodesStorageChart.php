@@ -2,12 +2,14 @@
 
 namespace Pelican\Monitoring\Filament\Admin\Widgets;
 
-use App\Models\Node;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Filament\Support\RawJs;
 use Filament\Widgets\ChartWidget;
 
 class AllNodesStorageChart extends ChartWidget
 {
+    use InteractsWithMonitoringData;
+
     protected ?string $pollingInterval = '60s';
 
     protected ?string $maxHeight = '300px';
@@ -26,32 +28,23 @@ class AllNodesStorageChart extends ChartWidget
 
     protected function getData(): array
     {
-        $nodes = Node::all();
+        $snapshot = $this->getMonitoringSnapshot();
+        $nodes = array_values($snapshot['nodes'] ?? []);
         $labels = [];
         $usedData = [];
         $freeData = [];
-        $this->currentDiskTotal = 0;
-        $this->maxDiskTotal = 0;
+        $summary = $snapshot['summary'] ?? [];
+        $this->currentDiskTotal = (int) ($summary['disk_used'] ?? 0);
+        $this->maxDiskTotal = (int) ($summary['disk_total'] ?? 0);
 
         foreach ($nodes as $node) {
-            $labels[] = $node->name;
-
-            try {
-                $stats = $node->statistics();
-                $this->currentDiskTotal += $stats['disk_used'];
-                $this->maxDiskTotal += $stats['disk_total'];
-                $usedGb = round($stats['disk_used'] / (config('panel.use_binary_prefix') ? 1073741824 : 1000000000), 1);
-                $freeGb = round(($stats['disk_total'] - $stats['disk_used']) / (config('panel.use_binary_prefix') ? 1073741824 : 1000000000), 1);
-            } catch (\Exception) {
-                $usedGb = 0;
-                $freeGb = 0;
-            }
+            $labels[] = $node['name'];
+            $usedGb = round(($node['disk_used'] ?? 0) / (config('panel.use_binary_prefix') ? 1073741824 : 1000000000), 1);
+            $freeGb = round((max(0, ($node['disk_total'] ?? 0) - ($node['disk_used'] ?? 0))) / (config('panel.use_binary_prefix') ? 1073741824 : 1000000000), 1);
 
             $usedData[] = $usedGb;
             $freeData[] = $freeGb;
         }
-
-        $suffix = config('panel.use_binary_prefix') ? 'GiB' : 'GB';
 
         return [
             'datasets' => [

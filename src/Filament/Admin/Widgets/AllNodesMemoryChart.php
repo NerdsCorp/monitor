@@ -2,12 +2,14 @@
 
 namespace Pelican\Monitoring\Filament\Admin\Widgets;
 
-use App\Models\Node;
+use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Filament\Support\RawJs;
 use Filament\Widgets\ChartWidget;
 
 class AllNodesMemoryChart extends ChartWidget
 {
+    use InteractsWithMonitoringData;
+
     protected ?string $pollingInterval = '10s';
 
     protected ?string $maxHeight = '300px';
@@ -26,11 +28,13 @@ class AllNodesMemoryChart extends ChartWidget
 
     protected function getData(): array
     {
-        $nodes = Node::all();
+        $snapshot = $this->getMonitoringSnapshot();
+        $nodes = array_values($snapshot['nodes'] ?? []);
         $datasets = [];
         $labels = [];
-        $this->currentMemoryTotal = 0;
-        $this->maxMemoryTotal = 0;
+        $summary = $snapshot['summary'] ?? [];
+        $this->currentMemoryTotal = (int) ($summary['memory_used'] ?? 0);
+        $this->maxMemoryTotal = (int) ($summary['memory_total'] ?? 0);
         $colors = [
             'rgba(59, 130, 246, 0.8)',
             'rgba(16, 185, 129, 0.8)',
@@ -43,31 +47,11 @@ class AllNodesMemoryChart extends ChartWidget
         ];
 
         foreach ($nodes as $index => $node) {
-            $sessionKey = "monitoring.node_memory.{$node->id}";
-
-            try {
-                $stats = $node->statistics();
-                $memoryPercent = $stats['memory_total'] > 0
-                    ? round(($stats['memory_used'] / $stats['memory_total']) * 100, 1)
-                    : 0;
-                $this->currentMemoryTotal += $stats['memory_used'];
-                $this->maxMemoryTotal += $stats['memory_total'];
-            } catch (\Exception) {
-                $memoryPercent = 0;
-            }
-
-            $history = session($sessionKey, []);
-            $history[] = [
-                'value' => $memoryPercent,
-                'timestamp' => now(user()->timezone ?? 'UTC')->format('H:i:s'),
-            ];
-            $history = array_slice($history, -30);
-            session()->put($sessionKey, $history);
-
             $color = $colors[$index % count($colors)];
+            $history = $node['memory_history'] ?? [];
 
             $datasets[] = [
-                'label' => $node->name,
+                'label' => $node['name'],
                 'data' => array_column($history, 'value'),
                 'borderColor' => $color,
                 'backgroundColor' => str_replace('0.8', '0.1', $color),
