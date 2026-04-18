@@ -16,6 +16,10 @@ class MonitoringDataService
 
     private const SNAPSHOT_TTL_SECONDS = 10;
 
+    private const LAST_KNOWN_TTL_SECONDS = 300;
+
+    private const NODE_RESOLUTION_CACHE_TTL_SECONDS = 60;
+
     private const HISTORY_LIMIT = 30;
 
     private const HISTORY_TTL_SECONDS = 3600;
@@ -106,6 +110,7 @@ class MonitoringDataService
                 'load_average_5' => 0.0,
                 'load_average_15' => 0.0,
                 'error' => null,
+                'stale' => false,
                 'cpu_history' => [],
                 'memory_history' => [],
             ];
@@ -139,24 +144,53 @@ class MonitoringDataService
                     'load_average_15' => round((float) ($stats['load_average15'] ?? 0), 2),
                 ]);
 
-                $onlineNodes++;
-                $avgCpuAccumulator += $cpuUsagePercent;
-                $currentCpuTotal += $cpuTotalPercent;
-                $cpuCapacityTotal += $cpuCount * 100;
-                $memoryTotal += $nodeMemoryTotal;
-                $memoryUsed += $nodeMemoryUsed;
-                $diskTotal += $nodeDiskTotal;
-                $diskUsed += $nodeDiskUsed;
+                $this->cacheLastKnownNodeMetric($node->id, $metric);
+
+                $this->addNodeMetricToSummary(
+                    $metric,
+                    $onlineNodes,
+                    $avgCpuAccumulator,
+                    $currentCpuTotal,
+                    $cpuCapacityTotal,
+                    $memoryTotal,
+                    $memoryUsed,
+                    $diskTotal,
+                    $diskUsed,
+                );
             } catch (Throwable $exception) {
                 $nodeErrors++;
-                $metric['error'] = $exception->getMessage();
-                $messages["node-{$node->id}"] = "Node {$node->name} could not be refreshed.";
+                $metric['error'] = $this->normalizeRefreshErrorMessage($exception);
+                $serverNodeErrors[$node->id] ??= $metric['error'];
 
-                Log::warning('Monitoring plugin failed to refresh node statistics.', [
-                    'node_id' => $node->id,
-                    'node_name' => $node->name,
-                    'exception' => $exception,
-                ]);
+                if ($this->shouldUseLastKnownMetrics($exception)) {
+                    $metric = $this->restoreLastKnownNodeMetric($node->id, $metric);
+                }
+
+                if ($metric['stale']) {
+                    $this->addNodeMetricToSummary(
+                        $metric,
+                        $onlineNodes,
+                        $avgCpuAccumulator,
+                        $currentCpuTotal,
+                        $cpuCapacityTotal,
+                        $memoryTotal,
+                        $memoryUsed,
+                        $diskTotal,
+                        $diskUsed,
+                    );
+                }
+
+                if (! $this->isSilentMonitoringError($metric['error'])) {
+                    $messages["node-{$node->id}"] = $metric['stale']
+                        ? "Node {$node->name} timed out; showing last known metrics."
+                        : "Node {$node->name} could not be refreshed.";
+
+                    Log::warning('Monitoring plugin failed to refresh node statistics.', [
+                        'node_id' => $node->id,
+                        'node_name' => $node->name,
+                        'exception' => $exception,
+                    ]);
+                }
             }
 
             $metric['cpu_history'] = $this->pushHistory(
@@ -187,25 +221,54 @@ class MonitoringDataService
                 'memory_bytes' => 0,
                 'disk_bytes' => 0,
                 'error' => null,
+                'stale' => false,
             ];
 
             try {
                 $cachedNodeError = $serverNodeErrors[$server->node_id] ?? null;
 
                 if ($cachedNodeError !== null) {
-                    throw new \RuntimeException($cachedNodeError);
+                    $metric['error'] = $cachedNodeError;
+
+                    if ($this->shouldUseLastKnownMetricsMessage($cachedNodeError)) {
+                        $metric = $this->restoreLastKnownServerMetric($server->id, $metric);
+                    }
+
+                    if ($metric['stale']) {
+                        $this->addServerMetricToSummary(
+                            $metric,
+                            $runningServers,
+                            $serverOffline,
+                            $serverStatusDistribution,
+                        );
+                    } else {
+                        $serverStatusDistribution['errored']++;
+                    }
+
+                    $serverErrors++;
+                    $serverMetrics[$server->id] = $metric;
+
+                    continue;
                 }
 
                 $nodeEndpointError = $this->getNodeEndpointConfigurationError($server->node);
 
                 if ($nodeEndpointError !== null) {
                     $serverNodeErrors[$server->node_id] = $nodeEndpointError;
-                    throw new \RuntimeException($nodeEndpointError);
+                    $metric['error'] = $nodeEndpointError;
+                    $serverStatusDistribution['errored']++;
+                    $serverErrors++;
+                    $serverMetrics[$server->id] = $metric;
+
+                    continue;
                 }
 
-                $status = $server->retrieveStatus();
                 $resources = $server->retrieveResources();
-                $statusKey = $this->normalizeServerStatus($status);
+                $statusKey = $this->extractServerStatusFromResources($resources);
+
+                if ($statusKey === null) {
+                    $statusKey = $this->normalizeServerStatus($server->retrieveStatus());
+                }
 
                 $metric = array_merge($metric, [
                     'status' => $statusKey,
@@ -215,37 +278,48 @@ class MonitoringDataService
                     'disk_bytes' => (int) ($resources['disk_bytes'] ?? 0),
                 ]);
 
-                if ($status === ContainerStatus::Running) {
-                    $runningServers++;
+                $this->cacheLastKnownServerMetric($server->id, $metric);
+
+                $this->addServerMetricToSummary(
+                    $metric,
+                    $runningServers,
+                    $serverOffline,
+                    $serverStatusDistribution,
+                );
+            } catch (Throwable $exception) {
+                $serverErrors++;
+                $metric['error'] = $this->normalizeRefreshErrorMessage($exception);
+
+                if ($this->shouldUseLastKnownMetrics($exception)) {
+                    $metric = $this->restoreLastKnownServerMetric($server->id, $metric);
                 }
 
-                if ($statusKey === 'offline') {
-                    $serverOffline++;
-                }
-
-                if ($statusKey === 'running') {
-                    $serverStatusDistribution['running']++;
-                } elseif ($statusKey === 'starting') {
-                    $serverStatusDistribution['starting']++;
-                } elseif ($statusKey === 'offline') {
-                    $serverStatusDistribution['stopped']++;
+                if ($metric['stale']) {
+                    $this->addServerMetricToSummary(
+                        $metric,
+                        $runningServers,
+                        $serverOffline,
+                        $serverStatusDistribution,
+                    );
                 } else {
                     $serverStatusDistribution['errored']++;
                 }
-            } catch (Throwable $exception) {
-                $serverErrors++;
-                $serverStatusDistribution['errored']++;
-                $metric['error'] = $this->normalizeRefreshErrorMessage($exception);
-                $serverNodeErrors[$server->node_id] ??= $metric['error'];
-                $messages["server-{$server->id}"] = "Server {$server->name} could not be refreshed: {$metric['error']}";
 
-                Log::warning('Monitoring plugin failed to refresh server metrics.', [
-                    'server_id' => $server->id,
-                    'server_name' => $server->name,
-                    'node_id' => $server->node_id,
-                    'node_name' => $server->node?->name,
-                    'exception' => $exception,
-                ]);
+                $serverNodeErrors[$server->node_id] ??= $metric['error'];
+
+                if (! $this->isSilentMonitoringError($metric['error'])) {
+                    $messages["server-{$server->id}"] = $metric['stale']
+                        ? "Server {$server->name} timed out; showing last known metrics."
+                        : "Server {$server->name} could not be refreshed: {$metric['error']}";
+
+                    Log::warning('Monitoring plugin failed to refresh server metrics.', [
+                        'server_id' => $server->id,
+                        'server_name' => $server->name,
+                        'node_id' => $server->node_id,
+                        'node_name' => $server->node?->name,
+                        'exception' => $exception,
+                    ]);
+                }
             }
 
             $serverMetrics[$server->id] = $metric;
@@ -303,6 +377,27 @@ class MonitoringDataService
         return $status->isOffline() ? 'offline' : 'error';
     }
 
+    private function extractServerStatusFromResources(array $resources): ?string
+    {
+        $state = $resources['current_state']
+            ?? $resources['state']
+            ?? $resources['status']
+            ?? null;
+
+        if (! is_string($state) || $state === '') {
+            return null;
+        }
+
+        $state = Str::lower($state);
+
+        return match ($state) {
+            'running' => 'running',
+            'starting', 'start', 'booting' => 'starting',
+            'offline', 'stopped', 'stopping' => 'offline',
+            default => 'error',
+        };
+    }
+
     private function getServerStatusRank(string $status): int
     {
         return match ($status) {
@@ -337,6 +432,10 @@ class MonitoringDataService
 
         if ($port === null) {
             return "Node {$node->name} is missing a valid daemon port.";
+        }
+
+        if (! $this->canResolveNodeHost($host)) {
+            return "Node {$node->name} hostname could not be resolved before contacting the daemon.";
         }
 
         return null;
@@ -435,6 +534,147 @@ class MonitoringDataService
         }
 
         return null;
+    }
+
+    private function cacheLastKnownNodeMetric(int $nodeId, array $metric): void
+    {
+        Cache::put(
+            "monitoring.last_known.node.{$nodeId}",
+            $metric,
+            now()->addSeconds(self::LAST_KNOWN_TTL_SECONDS),
+        );
+    }
+
+    private function cacheLastKnownServerMetric(int $serverId, array $metric): void
+    {
+        Cache::put(
+            "monitoring.last_known.server.{$serverId}",
+            $metric,
+            now()->addSeconds(self::LAST_KNOWN_TTL_SECONDS),
+        );
+    }
+
+    private function canResolveNodeHost(string $host): bool
+    {
+        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+            return true;
+        }
+
+        return Cache::remember(
+            'monitoring.node_resolution.' . md5($host),
+            now()->addSeconds(self::NODE_RESOLUTION_CACHE_TTL_SECONDS),
+            static function () use ($host): bool {
+                $resolved = gethostbyname($host);
+
+                return $resolved !== $host;
+            },
+        );
+    }
+
+    private function restoreLastKnownNodeMetric(int $nodeId, array $metric): array
+    {
+        $cachedMetric = Cache::get("monitoring.last_known.node.{$nodeId}");
+
+        if (! is_array($cachedMetric)) {
+            return $metric;
+        }
+
+        return array_merge($metric, $cachedMetric, [
+            'error' => $metric['error'],
+            'stale' => true,
+        ]);
+    }
+
+    private function restoreLastKnownServerMetric(int $serverId, array $metric): array
+    {
+        $cachedMetric = Cache::get("monitoring.last_known.server.{$serverId}");
+
+        if (! is_array($cachedMetric)) {
+            return $metric;
+        }
+
+        return array_merge($metric, $cachedMetric, [
+            'error' => $metric['error'],
+            'stale' => true,
+        ]);
+    }
+
+    private function addNodeMetricToSummary(
+        array $metric,
+        int &$onlineNodes,
+        float &$avgCpuAccumulator,
+        float &$currentCpuTotal,
+        float &$cpuCapacityTotal,
+        int &$memoryTotal,
+        int &$memoryUsed,
+        int &$diskTotal,
+        int &$diskUsed,
+    ): void {
+        if (($metric['status'] ?? 'offline') !== 'online') {
+            return;
+        }
+
+        $onlineNodes++;
+        $avgCpuAccumulator += (float) ($metric['cpu_usage_percent'] ?? 0);
+        $currentCpuTotal += (float) ($metric['cpu_total_percent'] ?? 0);
+        $cpuCapacityTotal += (float) ((int) ($metric['cpu_count'] ?? 0) * 100);
+        $memoryTotal += (int) ($metric['memory_total'] ?? 0);
+        $memoryUsed += (int) ($metric['memory_used'] ?? 0);
+        $diskTotal += (int) ($metric['disk_total'] ?? 0);
+        $diskUsed += (int) ($metric['disk_used'] ?? 0);
+    }
+
+    private function addServerMetricToSummary(
+        array $metric,
+        int &$runningServers,
+        int &$serverOffline,
+        array &$serverStatusDistribution,
+    ): void {
+        $status = (string) ($metric['status'] ?? 'error');
+
+        if ($status === 'running') {
+            $runningServers++;
+            $serverStatusDistribution['running']++;
+
+            return;
+        }
+
+        if ($status === 'starting') {
+            $serverStatusDistribution['starting']++;
+
+            return;
+        }
+
+        if ($status === 'offline') {
+            $serverOffline++;
+            $serverStatusDistribution['stopped']++;
+
+            return;
+        }
+
+        $serverStatusDistribution['errored']++;
+    }
+
+    private function shouldUseLastKnownMetrics(Throwable $exception): bool
+    {
+        return str_contains($exception->getMessage(), 'cURL error 28');
+    }
+
+    private function shouldUseLastKnownMetricsMessage(string $message): bool
+    {
+        return str_contains($message, 'timed out')
+            || str_contains($message, 'could not be resolved');
+    }
+
+    private function isSilentMonitoringError(?string $message): bool
+    {
+        if (! is_string($message) || $message === '') {
+            return false;
+        }
+
+        return str_contains($message, 'timed out')
+            || str_contains($message, 'could not be resolved')
+            || str_contains($message, 'did not respond before the request timed out');
     }
 
     private function normalizeRefreshErrorMessage(Throwable $exception): string
