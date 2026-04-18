@@ -41,7 +41,7 @@ jobs:
           REPO="${{ github.repository }}"
           TAG="${{ steps.release.outputs.tag }}"
           VERSION="${{ steps.release.outputs.version }}"
-          DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/Monitor.zip"
+          DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/monitoring.zip"
 
           jq --arg version "$VERSION" '.version = $version' plugin.json > plugin.json.tmp
           mv plugin.json.tmp plugin.json
@@ -91,23 +91,23 @@ jobs:
       - name: Create pwa-plugin directory structure
         run: |
           mkdir -p Monitor
-          rsync -av --exclude='.git' --exclude='Monitor' ./ Monitor/
+          rsync -av --exclude='.git' --exclude='monitoring' ./ monitoring/
 
       - name: Create zip archive
-        run: zip -r Monitor.zip Monitor/
+        run: zip -r monitoring.zip monitoring/
 
       - name: Verify package archive
-        run: ls -lah Monitor.zip
+        run: ls -lah monitoring.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Monitor
-          path: Monitor.zip
+          name: monitoring
+          path: monitoring.zip
 
       - name: Upload zip to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh --version
-          gh release upload "${{ steps.release.outputs.tag }}" Monitor.zip --repo "${{ github.repository }}" --clobber
+          gh release upload "${{ steps.release.outputs.tag }}" monitoring.zip --repo "${{ github.repository }}" --clobber
