@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "description": "Monitor nodes and servers from the admin panel",
     "category": "plugin",
-    "url": "",
+    "url": "https://raw.githubusercontent.com/NerdsCorp/Monitor/refs/heads/main/update.json",
     "update_url": null,
     "namespace": "Pelican\\Monitoring",
     "class": "MonitoringPlugin",
@@ -13,5 +13,5 @@
         "admin"
     ],
     "panel_version": null,
-    "composer_packages": []
+    "composer_packages": null
 }
