@@ -65,4 +65,9 @@ return [
         'counts' => ':offline offline nodes, :errors refresh errors.',
         'unknown_time' => 'unknown',
     ],
+
+    'actions' => [
+        'refresh' => 'Refresh Now',
+        'refresh_success' => 'Monitoring data refresh started.',
+    ],
 ];

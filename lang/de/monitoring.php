@@ -65,4 +65,9 @@ return [
         'counts' => ':offline offline Nodes, :errors Aktualisierungsfehler.',
         'unknown_time' => 'unbekannt',
     ],
+
+    'actions' => [
+        'refresh' => 'Jetzt aktualisieren',
+        'refresh_success' => 'Monitoring-Daten werden neu geladen.',
+    ],
 ];

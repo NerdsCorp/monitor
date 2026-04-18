@@ -7,6 +7,7 @@ use App\Models\Node;
 use App\Models\Server;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Throwable;
 
 class MonitoringDataService
@@ -28,33 +29,39 @@ class MonitoringDataService
         );
     }
 
-    public function getSortedServerIds(string $metric = 'cpu_percent'): array
+    public function forgetSnapshot(): void
     {
-        $servers = array_values($this->getSnapshot()['servers'] ?? []);
+        Cache::forget(self::SNAPSHOT_CACHE_KEY);
+    }
 
-        usort($servers, function (array $left, array $right) use ($metric): int {
-            $rightValue = $right[$metric] ?? 0;
-            $leftValue = $left[$metric] ?? 0;
+    public function getSortedServerIds(string $metric = 'cpu_percent', string $direction = 'desc'): array
+    {
+        return $this->getSortedMetricIds(
+            array_values($this->getSnapshot()['servers'] ?? []),
+            $metric,
+            $direction,
+        );
+    }
 
-            if ($rightValue === $leftValue) {
-                return strcmp((string) ($left['name'] ?? ''), (string) ($right['name'] ?? ''));
-            }
-
-            return $rightValue <=> $leftValue;
-        });
-
-        return array_column($servers, 'id');
+    public function getSortedNodeIds(string $metric = 'name', string $direction = 'asc'): array
+    {
+        return $this->getSortedMetricIds(
+            array_values($this->getSnapshot()['nodes'] ?? []),
+            $metric,
+            $direction,
+        );
     }
 
     private function buildSnapshot(): array
     {
         $refreshedAt = now();
         $nodes = Node::query()->withCount('servers')->get();
-        $servers = Server::query()->with(['node:id,name', 'user:id,username'])->get();
+        $servers = Server::query()->with(['node', 'user:id,username'])->get();
 
         $nodeMetrics = [];
         $serverMetrics = [];
         $messages = [];
+        $serverNodeErrors = [];
 
         $onlineNodes = 0;
         $nodeErrors = 0;
@@ -85,6 +92,7 @@ class MonitoringDataService
                 'servers_count' => (int) ($node->servers_count ?? 0),
                 'status' => 'offline',
                 'status_label' => 'offline',
+                'status_rank' => 1,
                 'cpu_count' => 0,
                 'cpu_usage_percent' => 0.0,
                 'cpu_total_percent' => 0.0,
@@ -116,6 +124,7 @@ class MonitoringDataService
                 $metric = array_merge($metric, [
                     'status' => 'online',
                     'status_label' => 'online',
+                    'status_rank' => 0,
                     'cpu_count' => $cpuCount,
                     'cpu_usage_percent' => $cpuUsagePercent,
                     'cpu_total_percent' => $cpuTotalPercent,
@@ -173,6 +182,7 @@ class MonitoringDataService
                 'user_id' => $server->user_id,
                 'owner' => $server->user?->username,
                 'status' => 'error',
+                'status_rank' => 3,
                 'cpu_percent' => 0.0,
                 'memory_bytes' => 0,
                 'disk_bytes' => 0,
@@ -180,12 +190,26 @@ class MonitoringDataService
             ];
 
             try {
+                $cachedNodeError = $serverNodeErrors[$server->node_id] ?? null;
+
+                if ($cachedNodeError !== null) {
+                    throw new \RuntimeException($cachedNodeError);
+                }
+
+                $nodeEndpointError = $this->getNodeEndpointConfigurationError($server->node);
+
+                if ($nodeEndpointError !== null) {
+                    $serverNodeErrors[$server->node_id] = $nodeEndpointError;
+                    throw new \RuntimeException($nodeEndpointError);
+                }
+
                 $status = $server->retrieveStatus();
                 $resources = $server->retrieveResources();
                 $statusKey = $this->normalizeServerStatus($status);
 
                 $metric = array_merge($metric, [
                     'status' => $statusKey,
+                    'status_rank' => $this->getServerStatusRank($statusKey),
                     'cpu_percent' => round((float) ($resources['cpu_absolute'] ?? 0), 1),
                     'memory_bytes' => (int) ($resources['memory_bytes'] ?? 0),
                     'disk_bytes' => (int) ($resources['disk_bytes'] ?? 0),
@@ -211,12 +235,15 @@ class MonitoringDataService
             } catch (Throwable $exception) {
                 $serverErrors++;
                 $serverStatusDistribution['errored']++;
-                $metric['error'] = $exception->getMessage();
-                $messages["server-{$server->id}"] = "Server {$server->name} could not be refreshed.";
+                $metric['error'] = $this->normalizeRefreshErrorMessage($exception);
+                $serverNodeErrors[$server->node_id] ??= $metric['error'];
+                $messages["server-{$server->id}"] = "Server {$server->name} could not be refreshed: {$metric['error']}";
 
                 Log::warning('Monitoring plugin failed to refresh server metrics.', [
                     'server_id' => $server->id,
                     'server_name' => $server->name,
+                    'node_id' => $server->node_id,
+                    'node_name' => $server->node?->name,
                     'exception' => $exception,
                 ]);
             }
@@ -274,6 +301,191 @@ class MonitoringDataService
         }
 
         return $status->isOffline() ? 'offline' : 'error';
+    }
+
+    private function getServerStatusRank(string $status): int
+    {
+        return match ($status) {
+            'running' => 0,
+            'starting' => 1,
+            'offline' => 2,
+            default => 3,
+        };
+    }
+
+    private function getNodeEndpointConfigurationError(?Node $node): ?string
+    {
+        if ($node === null) {
+            return 'Node relationship is missing.';
+        }
+
+        $scheme = $this->extractNodeScheme($node);
+        $host = $this->extractNodeHost($node);
+        $port = $this->extractNodePort($node);
+
+        if ($scheme === null) {
+            return "Node {$node->name} is missing a daemon scheme.";
+        }
+
+        if (! in_array($scheme, ['http', 'https'], true)) {
+            return "Node {$node->name} has an invalid daemon scheme: {$scheme}.";
+        }
+
+        if ($host === null) {
+            return "Node {$node->name} is missing a daemon host or FQDN.";
+        }
+
+        if ($port === null) {
+            return "Node {$node->name} is missing a valid daemon port.";
+        }
+
+        return null;
+    }
+
+    private function extractNodeScheme(Node $node): ?string
+    {
+        $scheme = $this->firstFilledNodeValue($node, [
+            'scheme',
+            'daemon_scheme',
+        ]);
+
+        if (is_string($scheme) && $scheme !== '') {
+            return Str::lower($scheme);
+        }
+
+        $url = $this->firstFilledNodeValue($node, [
+            'daemon_base',
+            'daemon_url',
+            'base_url',
+        ]);
+
+        if (is_string($url) && str_contains($url, '://')) {
+            return Str::lower((string) parse_url($url, PHP_URL_SCHEME));
+        }
+
+        return null;
+    }
+
+    private function extractNodeHost(Node $node): ?string
+    {
+        $host = $this->firstFilledNodeValue($node, [
+            'fqdn',
+            'daemon_host',
+            'host',
+        ]);
+
+        if (is_string($host) && trim($host) !== '') {
+            return trim($host);
+        }
+
+        $url = $this->firstFilledNodeValue($node, [
+            'daemon_base',
+            'daemon_url',
+            'base_url',
+        ]);
+
+        if (is_string($url) && str_contains($url, '://')) {
+            $parsedHost = parse_url($url, PHP_URL_HOST);
+
+            return is_string($parsedHost) && $parsedHost !== '' ? $parsedHost : null;
+        }
+
+        return null;
+    }
+
+    private function extractNodePort(Node $node): ?int
+    {
+        $port = $this->firstFilledNodeValue($node, [
+            'daemon_listen',
+            'daemon_port',
+            'port',
+        ]);
+
+        if (is_numeric($port)) {
+            $port = (int) $port;
+
+            return ($port >= 1 && $port <= 65535) ? $port : null;
+        }
+
+        $url = $this->firstFilledNodeValue($node, [
+            'daemon_base',
+            'daemon_url',
+            'base_url',
+        ]);
+
+        if (is_string($url) && str_contains($url, '://')) {
+            $parsedPort = parse_url($url, PHP_URL_PORT);
+
+            if (is_int($parsedPort) && $parsedPort >= 1 && $parsedPort <= 65535) {
+                return $parsedPort;
+            }
+        }
+
+        return null;
+    }
+
+    private function firstFilledNodeValue(Node $node, array $keys): mixed
+    {
+        foreach ($keys as $key) {
+            $value = data_get($node, $key);
+
+            if ($value !== null && $value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeRefreshErrorMessage(Throwable $exception): string
+    {
+        $message = $exception->getMessage();
+
+        if (str_contains($message, 'cURL error 3')) {
+            return 'The assigned node has an invalid daemon URL configuration.';
+        }
+
+        if (str_contains($message, 'cURL error 28') && str_contains($message, 'Resolving timed out')) {
+            return 'The assigned node hostname could not be resolved within the timeout window.';
+        }
+
+        if (str_contains($message, 'cURL error 28') && str_contains($message, 'Operation timed out')) {
+            return 'The assigned node accepted the hostname lookup but did not return a response before the timeout.';
+        }
+
+        if (str_contains($message, 'cURL error 28')) {
+            return 'The assigned node did not respond before the request timed out.';
+        }
+
+        return $message;
+    }
+
+    private function getSortedMetricIds(array $items, string $metric, string $direction): array
+    {
+        $direction = Str::lower($direction) === 'asc' ? 'asc' : 'desc';
+
+        usort($items, function (array $left, array $right) use ($metric, $direction): int {
+            $leftValue = $left[$metric] ?? null;
+            $rightValue = $right[$metric] ?? null;
+            $comparison = $this->compareMetricValues($leftValue, $rightValue);
+
+            if ($comparison === 0) {
+                $comparison = strcmp((string) ($left['name'] ?? ''), (string) ($right['name'] ?? ''));
+            }
+
+            return $direction === 'asc' ? $comparison : -$comparison;
+        });
+
+        return array_column($items, 'id');
+    }
+
+    private function compareMetricValues(mixed $left, mixed $right): int
+    {
+        if (is_numeric($left) && is_numeric($right)) {
+            return $left <=> $right;
+        }
+
+        return strcmp((string) $left, (string) $right);
     }
 
     private function pushHistory(string $key, float|int $value, \DateTimeInterface $timestamp): array

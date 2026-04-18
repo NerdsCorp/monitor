@@ -23,13 +23,14 @@ class TopServersTable extends TableWidget
 
     public function table(Table $table): Table
     {
-        $orderedIds = app(MonitoringDataService::class)->getSortedServerIds('cpu_percent');
-
         return $table
             ->query(
                 Server::query()
                     ->with(['node:id,name', 'user:id,username'])
-                    ->when($orderedIds !== [], fn (Builder $query) => $query->orderByRaw($this->buildServerOrderExpression($query, $orderedIds))),
+                    ->when(
+                        blank($this->tableSortColumn ?? null),
+                        fn (Builder $query) => $this->applyCachedSort($query, 'cpu_percent', 'desc'),
+                    ),
             )
             ->heading(trans('monitoring::monitoring.tables.top_servers'))
             ->description(trans('monitoring::monitoring.tables.top_servers_desc'))
@@ -49,6 +50,7 @@ class TopServersTable extends TableWidget
                 TextColumn::make('status')
                     ->label(trans('monitoring::monitoring.tables.status'))
                     ->badge()
+                    ->sortable(query: fn (Builder $query, string $direction) => $this->applyCachedSort($query, 'status_rank', $direction))
                     ->getStateUsing(fn (Server $record): string => trans('monitoring::monitoring.tables.server_status.' . ($this->getServerMetric($record->id)['status'] ?? 'error')))
                     ->color(fn (string $state) => match ($state) {
                         trans('monitoring::monitoring.tables.server_status.running') => 'success',
@@ -59,14 +61,17 @@ class TopServersTable extends TableWidget
 
                 TextColumn::make('cpu_usage')
                     ->label(trans('monitoring::monitoring.tables.cpu'))
+                    ->sortable(query: fn (Builder $query, string $direction) => $this->applyCachedSort($query, 'cpu_percent', $direction))
                     ->getStateUsing(fn (Server $record): string => format_number($this->getServerMetric($record->id)['cpu_percent'] ?? 0, maxPrecision: 1) . ' %'),
 
                 TextColumn::make('memory_usage')
                     ->label(trans('monitoring::monitoring.tables.memory'))
+                    ->sortable(query: fn (Builder $query, string $direction) => $this->applyCachedSort($query, 'memory_bytes', $direction))
                     ->getStateUsing(fn (Server $record): string => convert_bytes_to_readable($this->getServerMetric($record->id)['memory_bytes'] ?? 0)),
 
                 TextColumn::make('disk_usage')
                     ->label(trans('monitoring::monitoring.tables.disk'))
+                    ->sortable(query: fn (Builder $query, string $direction) => $this->applyCachedSort($query, 'disk_bytes', $direction))
                     ->getStateUsing(fn (Server $record): string => convert_bytes_to_readable($this->getServerMetric($record->id)['disk_bytes'] ?? 0)),
             ])
             ->filters([
@@ -80,7 +85,18 @@ class TopServersTable extends TableWidget
             ->defaultPaginationPageOption(10);
     }
 
-    private function buildServerOrderExpression(Builder $query, array $orderedIds): string
+    private function applyCachedSort(Builder $query, string $metric, string $direction): Builder
+    {
+        $orderedIds = app(MonitoringDataService::class)->getSortedServerIds($metric, $direction);
+
+        if ($orderedIds === []) {
+            return $query;
+        }
+
+        return $query->reorder()->orderByRaw($this->buildOrderExpression($query, $orderedIds));
+    }
+
+    private function buildOrderExpression(Builder $query, array $orderedIds): string
     {
         $qualifiedKeyName = $query->getModel()->getQualifiedKeyName();
         $cases = [];

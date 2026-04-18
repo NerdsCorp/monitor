@@ -4,6 +4,8 @@ namespace Pelican\Monitoring\Filament\Admin\Pages;
 
 use App\Enums\TablerIcon;
 use BackedEnum;
+use Filament\Actions\Action;
+use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Pelican\Monitoring\Concerns\InteractsWithMonitoringData;
 use Pelican\Monitoring\Filament\Admin\Widgets\AllNodesCpuChart;
@@ -13,6 +15,7 @@ use Pelican\Monitoring\Filament\Admin\Widgets\NodeHealthTable;
 use Pelican\Monitoring\Filament\Admin\Widgets\ServerStatusDistribution;
 use Pelican\Monitoring\Filament\Admin\Widgets\SystemOverviewStats;
 use Pelican\Monitoring\Filament\Admin\Widgets\TopServersTable;
+use Pelican\Monitoring\Services\MonitoringDataService;
 
 class Monitoring extends Page
 {
@@ -38,6 +41,26 @@ class Monitoring extends Page
     {
         return [
             SystemOverviewStats::class,
+        ];
+    }
+
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('refreshMonitoring')
+                ->label(trans('monitoring::monitoring.actions.refresh'))
+                ->icon('tabler-refresh')
+                ->action(function (): void {
+                    app(MonitoringDataService::class)->forgetSnapshot();
+                    $this->monitoringSnapshot = null;
+
+                    Notification::make()
+                        ->success()
+                        ->title(trans('monitoring::monitoring.actions.refresh_success'))
+                        ->send();
+
+                    $this->redirect(static::getUrl());
+                }),
         ];
     }
 
